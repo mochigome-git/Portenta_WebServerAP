@@ -1,5 +1,4 @@
 #pragma once
-
 #include <WiFiC3.h>
 #include <WiFiServer.h>
 #include <WiFiUdp.h>
@@ -21,25 +20,18 @@ class PortentaWebServerAP
 {
 public:
     PortentaWebServerAP(int httpPort = 80, int dnsPort = 53);
-
     void begin();
     void loop();
+    bool connectSavedWiFi();
+    void startAPMode();
+    void stopAPMode();
 
 private:
-    // -------------------------
-    // Constants
-    // -------------------------
+    const char *CRED_FILE = "/qspi/wifi.json";
     const char *AP_SSID = "Portenta-Setup";
     const char *AP_PASS = "12345678";
     IPAddress AP_IP = IPAddress(192, 168, 4, 1);
 
-    int HTTP_PORT;
-    int DNS_PORT;
-    const char *CRED_FILE = "/qspi/wifi.json";
-
-    // -------------------------
-    // State
-    // -------------------------
     WiFiServer server;
     WiFiUDP udp;
     bool apModeActive;
@@ -47,18 +39,10 @@ private:
     QSPIFlashBlockDevice blockDevice;
     FATFileSystem fs;
 
-    // -------------------------
-    // Helpers
-    // -------------------------
-    String urlDecode(const String &src);
-    bool parseCredsFromJson(const String &json, String &ssid, String &pass);
-
+    void updateLED();
+    void handleDNS();
     bool loadCredentials(WifiCredentials &creds);
     void saveCredentials(const WifiCredentials &creds);
-
-    void handleDNS();
-    bool connectSavedWiFi();
-    void startAPMode();
-    void stopAPMode();
-    void updateLED();
+    String urlDecode(const String &src);
+    bool parseCredsFromJson(const String &json, String &ssid, String &pass);
 };

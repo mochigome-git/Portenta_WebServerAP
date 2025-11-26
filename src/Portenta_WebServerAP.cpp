@@ -196,21 +196,24 @@ void PortentaWebServerAP::begin()
     LED_Init();
     LED_Test();
 
+    // Mount filesystem, format only if failed
     if (!fs.mount(&blockDevice))
         fs.reformat(&blockDevice);
-    server.begin();
 
+    // Try to connect saved WiFi
     if (connectSavedWiFi())
     {
-        Serial.println("STA mode active");
-        Serial.print("STA IP: ");
+        Serial.print("Connected to WiFi. IP: ");
         Serial.println(WiFi.localIP());
+        apModeActive = false; // no AP
     }
     else
     {
-        Serial.println("Starting AP mode");
+        Serial.println("Failed to connect WiFi. Starting AP mode...");
         startAPMode();
     }
+
+    server.begin(); // webserver always started
 }
 
 // -------------------------
@@ -221,5 +224,56 @@ void PortentaWebServerAP::loop()
     updateLED();
     if (apModeActive)
         handleDNS();
-    // Web server handling can be added here...
+
+    WiFiClient client = server.available();
+    if (client)
+    {
+        String request = "";
+        unsigned long timeout = millis() + 5000;
+        while (client.connected() && millis() < timeout)
+        {
+            while (client.available())
+                request += (char)client.read();
+        }
+
+        String body = "";
+        int idx = request.indexOf("\r\n\r\n");
+        if (idx >= 0)
+            body = request.substring(idx + 4);
+
+        // handle GET /L, /H, /test
+        if (request.indexOf("GET /L") >= 0)
+            LED_SetColor(BLUE);
+        if (request.indexOf("GET /H") >= 0)
+            LED_SetColor(OFF);
+        if (request.indexOf("GET /test") >= 0)
+            LED_Test();
+
+        // handle POST /save
+        if (request.startsWith("POST /save"))
+        {
+            int ssidPos = body.indexOf("ssid=");
+            int passPos = body.indexOf("pass=");
+            if (ssidPos >= 0 && passPos >= 0)
+            {
+                String s = urlDecode(body.substring(ssidPos + 5, passPos - 1));
+                String p = urlDecode(body.substring(passPos + 5));
+                WifiCredentials creds;
+                s.toCharArray(creds.ssid, sizeof(creds.ssid));
+                p.toCharArray(creds.pass, sizeof(creds.pass));
+                saveCredentials(creds);
+                client.println("HTTP/1.1 200 OK\r\nContent-type:text/html\r\n\r\n<h2>Saved. Rebooting...</h2>");
+                client.stop();
+                NVIC_SystemReset();
+                return;
+            }
+        }
+
+        // serve portal page
+        client.println("HTTP/1.1 200 OK");
+        client.println("Content-type:text/html");
+        client.println();
+        client.println("<h2>Portenta WiFi Setup</h2>");
+        client.stop();
+    }
 }

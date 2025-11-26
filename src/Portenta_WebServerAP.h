@@ -16,6 +16,9 @@ struct WifiCredentials
     char pass[64];
 };
 
+// -------------------------
+// Portenta WebServer AP class
+// -------------------------
 class PortentaWebServerAP
 {
 public:
@@ -27,18 +30,23 @@ public:
     void stopAPMode();
 
 private:
-    const char *CRED_FILE = "/qspi/wifi.json";
+    // AP + credentials info
     const char *AP_SSID = "Portenta-Setup";
     const char *AP_PASS = "12345678";
     IPAddress AP_IP = IPAddress(192, 168, 4, 1);
+    const char *CRED_FILE = "/qspi/wifi.json";
 
+    // Server & UDP for DNS redirect
     WiFiServer server;
     WiFiUDP udp;
     bool apModeActive;
 
+    // Flash filesystem
+    static constexpr const char *FS_NAME = "qspi";
     QSPIFlashBlockDevice blockDevice;
     FATFileSystem fs;
 
+    // Helpers
     void updateLED();
     void handleDNS();
     bool loadCredentials(WifiCredentials &creds);

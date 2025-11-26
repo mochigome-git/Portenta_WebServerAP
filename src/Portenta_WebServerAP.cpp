@@ -196,16 +196,27 @@ void PortentaWebServerAP::begin()
     LED_Init();
     LED_Test();
 
-    // Mount filesystem, format only if failed
+    // Mount filesystem. Format only if mount fails
     if (!fs.mount(&blockDevice))
-        fs.reformat(&blockDevice);
+    {
+        Serial.println("FS mount failed, formatting...");
+        if (!fs.reformat(&blockDevice))
+        {
+            Serial.println("FS format failed, stopping...");
+            return; // stop if format fails
+        }
+    }
+    else
+    {
+        Serial.println("FS mounted successfully");
+    }
 
     // Try to connect saved WiFi
     if (connectSavedWiFi())
     {
         Serial.print("Connected to WiFi. IP: ");
         Serial.println(WiFi.localIP());
-        apModeActive = false; // no AP
+        apModeActive = false;
     }
     else
     {
@@ -219,155 +230,97 @@ void PortentaWebServerAP::begin()
 // -------------------------
 // Main loop
 // -------------------------
-// -------------------------
-// Main loop
-// -------------------------
 void PortentaWebServerAP::loop()
 {
-    static unsigned long lastScanTime = 0;
-    static int networkCount = 0;
-    static String networkList[20];
-
     updateLED();
     if (apModeActive)
         handleDNS();
 
-    // scan networks every 10s
-    if (apModeActive && millis() - lastScanTime > 10000)
-    {
-        networkCount = WiFi.scanNetworks();
-        for (int i = 0; i < networkCount && i < 20; i++)
-            networkList[i] = WiFi.SSID(i);
-        lastScanTime = millis();
-    }
-
     WiFiClient client = server.available();
-    if (!client)
-        return;
-
-    String request = "";
-    unsigned long timeout = millis() + 5000;
-    while (client.connected() && millis() < timeout)
+    if (client)
     {
-        while (client.available())
-            request += (char)client.read();
-    }
-
-    // Extract body
-    String body = "";
-    int idx = request.indexOf("\r\n\r\n");
-    if (idx >= 0)
-        body = request.substring(idx + 4);
-
-    // Handle GET commands
-    if (request.indexOf("GET /L") >= 0)
-        LED_SetColor(BLUE);
-    if (request.indexOf("GET /H") >= 0)
-        LED_SetColor(OFF);
-    if (request.indexOf("GET /test") >= 0)
-        LED_Test();
-
-    // Handle POST /save
-    if (request.startsWith("POST /save"))
-    {
-        int ssidPos = body.indexOf("ssid=");
-        int passPos = body.indexOf("pass=");
-
-        if (ssidPos >= 0 && passPos >= 0)
+        String request = "";
+        unsigned long timeout = millis() + 5000;
+        while (client.connected() && millis() < timeout)
         {
-            // Safely extract ssid & pass
-            int amp = body.indexOf('&', ssidPos);
-            String s;
-            if (amp > 0 && amp < passPos)
-                s = body.substring(ssidPos + 5, amp);
-            else
-                s = body.substring(ssidPos + 5, passPos);
-
-            int amp2 = body.indexOf('&', passPos);
-            String p;
-            if (amp2 > 0)
-                p = body.substring(passPos + 5, amp2);
-            else
-                p = body.substring(passPos + 5);
-
-            s = urlDecode(s);
-            p = urlDecode(p);
-
-            WifiCredentials creds;
-            s.toCharArray(creds.ssid, sizeof(creds.ssid));
-            p.toCharArray(creds.pass, sizeof(creds.pass));
-            saveCredentials(creds);
-
-            client.println("HTTP/1.1 200 OK");
-            client.println("Content-type:text/html");
-            client.println();
-            client.println("<html><body><h2>Credentials saved. Rebooting...</h2></body></html>");
-            client.println();
-            client.stop();
-
-            Serial.println("Credentials saved. Rebooting...");
-            delay(500);
-            NVIC_SystemReset();
-            return;
+            while (client.available())
+                request += (char)client.read();
         }
+
+        String body = "";
+        int idx = request.indexOf("\r\n\r\n");
+        if (idx >= 0)
+            body = request.substring(idx + 4);
+
+        // handle GET /L, /H, /test
+        if (request.indexOf("GET /L") >= 0)
+            LED_SetColor(BLUE);
+        if (request.indexOf("GET /H") >= 0)
+            LED_SetColor(OFF);
+        if (request.indexOf("GET /test") >= 0)
+            LED_Test();
+
+        // handle POST /save
+        if (request.startsWith("POST /save"))
+        {
+            int ssidPos = body.indexOf("ssid=");
+            int passPos = body.indexOf("pass=");
+            if (ssidPos >= 0 && passPos >= 0)
+            {
+                String s = urlDecode(body.substring(ssidPos + 5, passPos - 1));
+                String p = urlDecode(body.substring(passPos + 5));
+                WifiCredentials creds;
+                s.toCharArray(creds.ssid, sizeof(creds.ssid));
+                p.toCharArray(creds.pass, sizeof(creds.pass));
+                saveCredentials(creds);
+                client.println("HTTP/1.1 200 OK\r\nContent-type:text/html\r\n\r\n<h2>Saved. Rebooting...</h2>");
+                client.stop();
+                NVIC_SystemReset();
+                return;
+            }
+        }
+        // serve portal page
+        client.println("HTTP/1.1 200 OK");
+        client.println("Content-type:text/html");
+        client.println();
+        client.println("<!DOCTYPE html>");
+        client.println("<html>");
+        client.println("<head>");
+        client.println("<title>WiFi Setup</title>");
+        client.println("<meta name='viewport' content='width=device-width, initial-scale=1.0'>");
+        client.println("<style>");
+        client.println("body { font-family: Arial, sans-serif; margin: 0; padding: 10px; text-align: center; }");
+        client.println("input, select, button { font-size: 1.2em; padding: 8px; margin: 5px 0; width: 90%; max-width: 300px; }");
+        client.println("h2 { font-size: 2em; }");
+        client.println("</style>");
+        client.println("</head>");
+        client.println("<body>");
+        client.println("<h2>Portenta C3 WiFi Setup</h2>");
+        client.println("<form method='POST' action='/save'>");
+
+        // Build SSID list if scanned
+        int count = WiFi.scanNetworks();
+        if (count == 0)
+            client.println("<option>No networks found</option>");
         else
         {
-            client.println("HTTP/1.1 400 Bad Request");
-            client.println("Content-type:text/html");
-            client.println();
-            client.println("<html><body><h2>Bad request - missing ssid or pass</h2></body></html>");
-            client.println();
-            client.stop();
-            Serial.println("Bad POST /save request");
-            return;
+            client.println("SSID: <select name='ssid'>");
+            for (int i = 0; i < count && i < 20; i++)
+            {
+                client.print("<option>");
+                client.print(WiFi.SSID(i));
+                client.println("</option>");
+            }
+            client.println("</select><br><br>");
         }
+
+        client.println("Password: <input type='password' name='pass'><br><br>");
+        client.println("<button type='submit'>Save</button>");
+        client.println("</form>");
+        client.println("<p><a href='/L'>Turn LED ON</a></p>");
+        client.println("<p><a href='/H'>Turn LED OFF</a></p>");
+        client.println("<p><a href='/test'>Test LED Colors</a></p>");
+        client.println("</body></html>");
+        client.println();
     }
-
-    // Serve portal page
-    client.println("HTTP/1.1 200 OK");
-    client.println("Content-type:text/html");
-    client.println();
-    client.println("<!DOCTYPE html>");
-    client.println("<html>");
-    client.println("<head>");
-    client.println("<title>WiFi Setup</title>");
-    client.println("<meta name='viewport' content='width=device-width, initial-scale=1.0'>");
-    client.println("<style>");
-    client.println("body { font-family: Arial, sans-serif; margin: 0; padding: 10px; text-align: center; }");
-    client.println("input, select, button { font-size: 1.2em; padding: 8px; margin: 5px 0; width: 90%; max-width: 300px; }");
-    client.println("h2 { font-size: 2em; }");
-    client.println("</style>");
-    client.println("</head>");
-    client.println("<body>");
-    client.println("<h2>Portenta C3 WiFi Setup</h2>");
-    client.println("<form method='POST' action='/save'>");
-
-    // SSID dropdown
-    if (networkCount == 0)
-    {
-        client.println("<p>Scanning for networks...</p>");
-    }
-    else
-    {
-        client.println("SSID: <select name='ssid'>");
-        for (int i = 0; i < networkCount && i < 20; i++)
-        {
-            client.print("<option>");
-            client.print(networkList[i]);
-            client.println("</option>");
-        }
-        client.println("</select><br><br>");
-    }
-
-    client.println("Password: <input type='password' name='pass'><br><br>");
-    client.println("<button type='submit'>Save</button>");
-    client.println("</form>");
-    client.println("<p><a href='/L'>Turn LED ON</a></p>");
-    client.println("<p><a href='/H'>Turn LED OFF</a></p>");
-    client.println("<p><a href='/test'>Test LED Colors</a></p>");
-    client.println("</body></html>");
-    client.println();
-
-    client.stop();
-    Serial.println("Client disconnected");
 }

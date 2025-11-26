@@ -1,4 +1,5 @@
 #pragma once
+
 #include <WiFiC3.h>
 #include <WiFiServer.h>
 #include <WiFiUdp.h>
@@ -16,41 +17,48 @@ struct WifiCredentials
     char pass[64];
 };
 
-// -------------------------
-// Portenta WebServer AP class
-// -------------------------
 class PortentaWebServerAP
 {
 public:
     PortentaWebServerAP(int httpPort = 80, int dnsPort = 53);
+
     void begin();
     void loop();
-    bool connectSavedWiFi();
-    void startAPMode();
-    void stopAPMode();
 
 private:
-    // AP + credentials info
+    // -------------------------
+    // Constants
+    // -------------------------
     const char *AP_SSID = "Portenta-Setup";
     const char *AP_PASS = "12345678";
     IPAddress AP_IP = IPAddress(192, 168, 4, 1);
+
+    int HTTP_PORT;
+    int DNS_PORT;
     const char *CRED_FILE = "/qspi/wifi.json";
 
-    // Server & UDP for DNS redirect
+    // -------------------------
+    // State
+    // -------------------------
     WiFiServer server;
     WiFiUDP udp;
     bool apModeActive;
 
-    // Flash filesystem
-    static constexpr const char *FS_NAME = "qspi";
     QSPIFlashBlockDevice blockDevice;
     FATFileSystem fs;
 
+    // -------------------------
     // Helpers
-    void updateLED();
-    void handleDNS();
-    bool loadCredentials(WifiCredentials &creds);
-    void saveCredentials(const WifiCredentials &creds);
+    // -------------------------
     String urlDecode(const String &src);
     bool parseCredsFromJson(const String &json, String &ssid, String &pass);
+
+    bool loadCredentials(WifiCredentials &creds);
+    void saveCredentials(const WifiCredentials &creds);
+
+    void handleDNS();
+    bool connectSavedWiFi();
+    void startAPMode();
+    void stopAPMode();
+    void updateLED();
 };

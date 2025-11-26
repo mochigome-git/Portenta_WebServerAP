@@ -195,9 +195,22 @@ void PortentaWebServerAP::begin()
 {
     LED_Init();
     LED_Test();
-    if (fs.mount(&blockDevice))
+
+    if (!fs.mount(&blockDevice))
         fs.reformat(&blockDevice);
     server.begin();
+
+    if (connectSavedWiFi())
+    {
+        Serial.println("STA mode active");
+        Serial.print("STA IP: ");
+        Serial.println(WiFi.localIP());
+    }
+    else
+    {
+        Serial.println("Starting AP mode");
+        startAPMode();
+    }
 }
 
 // -------------------------

@@ -1,17 +1,21 @@
-#include "Portenta_WebServerAP.h"
+#include "PortentaWebServerAP.h"
+#include "Arduino.h"
+#include <stdlib.h>
 
 // -------------------------
 // Constructor
 // -------------------------
 PortentaWebServerAP::PortentaWebServerAP(int httpPort, int dnsPort)
-    : server(httpPort), udp(), apModeActive(false),
+    : HTTP_PORT(httpPort), DNS_PORT(dnsPort),
+      server(httpPort), udp(),
+      apModeActive(false),
       blockDevice(PIN_QSPI_CLK, PIN_QSPI_SS, PIN_QSPI_D0, PIN_QSPI_D1, PIN_QSPI_D2, PIN_QSPI_D3),
       fs("qspi")
 {
 }
 
 // -------------------------
-// Helpers
+// URL decode for form fields
 // -------------------------
 String PortentaWebServerAP::urlDecode(const String &src)
 {
@@ -40,6 +44,9 @@ String PortentaWebServerAP::urlDecode(const String &src)
     return ret;
 }
 
+// -------------------------
+// Parse JSON credentials
+// -------------------------
 bool PortentaWebServerAP::parseCredsFromJson(const String &json, String &ssid, String &pass)
 {
     int i1 = json.indexOf("\"ssid\"");
@@ -49,8 +56,10 @@ bool PortentaWebServerAP::parseCredsFromJson(const String &json, String &ssid, S
     if (col < 0)
         return false;
     int q1 = json.indexOf('"', col);
+    if (q1 < 0)
+        return false;
     int q2 = json.indexOf('"', q1 + 1);
-    if (q1 < 0 || q2 < 0)
+    if (q2 < 0)
         return false;
     ssid = json.substring(q1 + 1, q2);
 
@@ -61,31 +70,51 @@ bool PortentaWebServerAP::parseCredsFromJson(const String &json, String &ssid, S
         return true;
     }
     col = json.indexOf(':', i2);
+    if (col < 0)
+        return false;
     q1 = json.indexOf('"', col);
+    if (q1 < 0)
+        return false;
     q2 = json.indexOf('"', q1 + 1);
-    if (q1 < 0 || q2 < 0)
+    if (q2 < 0)
         return false;
     pass = json.substring(q1 + 1, q2);
     return true;
 }
 
 // -------------------------
-// Load / Save credentials
+// Load/Save Credentials
 // -------------------------
 bool PortentaWebServerAP::loadCredentials(WifiCredentials &creds)
 {
     FILE *f = fopen(CRED_FILE, "r");
     if (!f)
+    {
+        Serial.println("loadCredentials: file not found");
         return false;
+    }
+
     char buf[128] = {0};
-    fread(buf, 1, sizeof(buf) - 1, f);
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
     fclose(f);
+    if (n == 0)
+    {
+        Serial.println("loadCredentials: empty file");
+        return false;
+    }
 
     String ssidStr, passStr;
-    if (!parseCredsFromJson(buf, ssidStr, passStr))
+    if (!parseCredsFromJson(String(buf), ssidStr, passStr))
+    {
+        Serial.println("Failed to parse credentials");
         return false;
+    }
+
     ssidStr.toCharArray(creds.ssid, sizeof(creds.ssid));
     passStr.toCharArray(creds.pass, sizeof(creds.pass));
+
+    Serial.print("Loaded creds: ");
+    Serial.println(creds.ssid);
     return true;
 }
 
@@ -93,27 +122,20 @@ void PortentaWebServerAP::saveCredentials(const WifiCredentials &creds)
 {
     FILE *f = fopen(CRED_FILE, "w");
     if (!f)
+    {
+        Serial.println("saveCredentials: open failed");
         return;
+    }
+
     String json = "{\"ssid\":\"" + String(creds.ssid) + "\",\"pass\":\"" + String(creds.pass) + "\"}";
     fwrite(json.c_str(), 1, json.length(), f);
     fclose(f);
+
+    Serial.println("saveCredentials: written successfully");
 }
 
 // -------------------------
-// LED status
-// -------------------------
-void PortentaWebServerAP::updateLED()
-{
-    if (apModeActive)
-        LED_SetColor(RED);
-    else if (WiFi.status() == WL_CONNECTED)
-        LED_SetColor(CYAN);
-    else
-        LED_SetColor(OFF);
-}
-
-// -------------------------
-// DNS handler
+// DNS Captive Portal
 // -------------------------
 void PortentaWebServerAP::handleDNS()
 {
@@ -126,20 +148,23 @@ void PortentaWebServerAP::handleDNS()
         int len = udp.read(buf, sizeof(buf));
         if (len <= 0)
             return;
-        buf[2] = 0x81;
+
+        buf[2] = 0x81; // QR = response
         buf[3] = 0x80;
         buf[7] = 0x01;
+
         int qend = 12;
         while (qend < len && buf[qend] != 0)
             qend++;
         int rdataIndex = qend + 12;
-        if (rdataIndex + 13 < sizeof(buf))
+        if (rdataIndex + 13 < (int)sizeof(buf))
         {
             buf[rdataIndex + 10] = AP_IP[0];
             buf[rdataIndex + 11] = AP_IP[1];
             buf[rdataIndex + 12] = AP_IP[2];
             buf[rdataIndex + 13] = AP_IP[3];
         }
+
         udp.beginPacket(udp.remoteIP(), udp.remotePort());
         udp.write(buf, packetSize);
         udp.endPacket();
@@ -147,84 +172,121 @@ void PortentaWebServerAP::handleDNS()
 }
 
 // -------------------------
-// Connect saved WiFi
+// Connect Saved WiFi
 // -------------------------
 bool PortentaWebServerAP::connectSavedWiFi()
 {
     WifiCredentials creds;
     if (!loadCredentials(creds))
+    {
+        Serial.println("No saved credentials found");
         return false;
+    }
 
+    Serial.print("Connecting to saved WiFi: ");
+    Serial.println(creds.ssid);
     WiFi.end();
     delay(150);
     WiFi.begin(creds.ssid, creds.pass);
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 20000)
-        delay(300);
 
-    return (WiFi.status() == WL_CONNECTED);
+    unsigned long start = millis();
+    const unsigned long timeout = 20000UL;
+    while (WiFi.status() != WL_CONNECTED && millis() - start < timeout)
+    {
+        delay(300);
+        Serial.print(".");
+    }
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        Serial.println("\nConnected! IP: ");
+        Serial.println(WiFi.localIP());
+        return true;
+    }
+
+    Serial.println("\nFailed to connect.");
+    return false;
 }
 
 // -------------------------
-// Start / Stop AP
+// AP Mode
 // -------------------------
 void PortentaWebServerAP::startAPMode()
 {
+    Serial.println("Starting AP...");
     WiFi.end();
     delay(150);
-    if (WiFi.beginAP(AP_SSID, AP_PASS) != WL_AP_LISTENING)
+    int st = WiFi.beginAP(AP_SSID, AP_PASS);
+    if (st != WL_AP_LISTENING)
+    {
+        Serial.println("Creating AP failed");
         return;
-    udp.begin(53);
+    }
+
+    Serial.print("AP IP: ");
+    Serial.println(WiFi.localIP());
+    udp.begin(DNS_PORT);
     server.begin();
     apModeActive = true;
+    Serial.println("Web server started.");
 }
 
 void PortentaWebServerAP::stopAPMode()
 {
     if (!apModeActive)
         return;
+    Serial.println("Stopping AP...");
     WiFi.end();
     delay(150);
     apModeActive = false;
 }
 
 // -------------------------
-// Begin library
+// LED Status
+// -------------------------
+void PortentaWebServerAP::updateLED()
+{
+    if (apModeActive)
+        LED_SetColor(RED);
+    else if (WiFi.status() == WL_CONNECTED)
+        LED_SetColor(CYAN);
+    else
+        LED_SetColor(OFF);
+}
+
+// -------------------------
+// Begin
 // -------------------------
 void PortentaWebServerAP::begin()
 {
+    Serial.begin(115200);
+    while (!Serial)
+        ;
     LED_Init();
     LED_Test();
 
-    // Mount filesystem. Format only if mount fails
-    if (!fs.mount(&blockDevice))
+    Serial.println("Mounting QSPI Flash FS...");
+    int err = fs.mount(&blockDevice);
+    if (err)
     {
-        Serial.println("FS mount failed, formatting...");
-        if (!fs.reformat(&blockDevice))
+        Serial.println("Mount failed, formatting...");
+        err = fs.reformat(&blockDevice);
+        if (err)
         {
-            Serial.println("FS format failed, stopping...");
-            return; // stop if format fails
+            Serial.println("Format failed, stopping...");
+            while (1)
+                ;
         }
+        else
+            Serial.println("FS formatted successfully");
     }
     else
-    {
         Serial.println("FS mounted successfully");
-    }
 
-    // Try to connect saved WiFi
-    if (connectSavedWiFi())
-    {
-        Serial.print("Connected to WiFi. IP: ");
-        Serial.println(WiFi.localIP());
-        apModeActive = false;
-    }
-    else
-    {
-        Serial.println("Failed to connect WiFi. Starting AP mode...");
+    if (!connectSavedWiFi())
         startAPMode();
-    }
-
-    server.begin(); // webserver always started
+    server.begin();
+    Serial.println("Web server started.");
 }
 
 // -------------------------
@@ -233,94 +295,138 @@ void PortentaWebServerAP::begin()
 void PortentaWebServerAP::loop()
 {
     updateLED();
+
     if (apModeActive)
         handleDNS();
 
-    WiFiClient client = server.available();
-    if (client)
+    // Scan networks every 10s
+    static unsigned long lastScan = 0;
+    static String networkList[20];
+    if (millis() - lastScan > 10000)
     {
-        String request = "";
-        unsigned long timeout = millis() + 5000;
-        while (client.connected() && millis() < timeout)
+        int networkCount = WiFi.scanNetworks();
+        for (int i = 0; i < networkCount && i < 20; i++)
+            networkList[i] = WiFi.SSID(i);
+        lastScan = millis();
+    }
+
+    WiFiClient client = server.available();
+    if (!client)
+        return;
+
+    Serial.println("New client connected");
+    String request = "";
+    unsigned long timeout = millis() + 5000;
+
+    while (client.connected() && millis() < timeout)
+    {
+        while (client.available())
+            request += (char)client.read();
+    }
+
+    String body = "";
+    int bodyIndex = request.indexOf("\r\n\r\n");
+    if (bodyIndex >= 0)
+        body = request.substring(bodyIndex + 4);
+
+    // GET shortcuts
+    if (request.indexOf("GET /L") >= 0)
+        LED_SetColor(BLUE);
+    if (request.indexOf("GET /H") >= 0)
+        LED_SetColor(OFF);
+    if (request.indexOf("GET /test") >= 0)
+        LED_Test();
+
+    // POST /save
+    if (request.startsWith("POST /save"))
+    {
+        int ssidPos = body.indexOf("ssid=");
+        int passPos = body.indexOf("pass=");
+        if (ssidPos >= 0 && passPos >= 0)
         {
-            while (client.available())
-                request += (char)client.read();
+            String s;
+            int amp = body.indexOf('&', ssidPos);
+            if (amp > 0 && amp < passPos)
+                s = body.substring(ssidPos + 5, amp);
+            else
+                s = body.substring(ssidPos + 5, passPos - 1);
+
+            int amp2 = body.indexOf('&', passPos);
+            String p;
+            if (amp2 > 0)
+                p = body.substring(passPos + 5, amp2);
+            else
+                p = body.substring(passPos + 5);
+
+            s = urlDecode(s);
+            p = urlDecode(p);
+            WifiCredentials creds;
+            s.toCharArray(creds.ssid, sizeof(creds.ssid));
+            p.toCharArray(creds.pass, sizeof(creds.pass));
+            saveCredentials(creds);
+
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-type:text/html");
+            client.println();
+            client.println("<html><body><h2>Credentials saved. Rebooting...</h2></body></html>");
+            client.println();
+            client.stop();
+
+            Serial.println("Credentials saved. Rebooting...");
+            delay(500);
+            NVIC_SystemReset();
+            return;
         }
-
-        String body = "";
-        int idx = request.indexOf("\r\n\r\n");
-        if (idx >= 0)
-            body = request.substring(idx + 4);
-
-        // handle GET /L, /H, /test
-        if (request.indexOf("GET /L") >= 0)
-            LED_SetColor(BLUE);
-        if (request.indexOf("GET /H") >= 0)
-            LED_SetColor(OFF);
-        if (request.indexOf("GET /test") >= 0)
-            LED_Test();
-
-        // handle POST /save
-        if (request.startsWith("POST /save"))
-        {
-            int ssidPos = body.indexOf("ssid=");
-            int passPos = body.indexOf("pass=");
-            if (ssidPos >= 0 && passPos >= 0)
-            {
-                String s = urlDecode(body.substring(ssidPos + 5, passPos - 1));
-                String p = urlDecode(body.substring(passPos + 5));
-                WifiCredentials creds;
-                s.toCharArray(creds.ssid, sizeof(creds.ssid));
-                p.toCharArray(creds.pass, sizeof(creds.pass));
-                saveCredentials(creds);
-                client.println("HTTP/1.1 200 OK\r\nContent-type:text/html\r\n\r\n<h2>Saved. Rebooting...</h2>");
-                client.stop();
-                NVIC_SystemReset();
-                return;
-            }
-        }
-        // serve portal page
-        client.println("HTTP/1.1 200 OK");
-        client.println("Content-type:text/html");
-        client.println();
-        client.println("<!DOCTYPE html>");
-        client.println("<html>");
-        client.println("<head>");
-        client.println("<title>WiFi Setup</title>");
-        client.println("<meta name='viewport' content='width=device-width, initial-scale=1.0'>");
-        client.println("<style>");
-        client.println("body { font-family: Arial, sans-serif; margin: 0; padding: 10px; text-align: center; }");
-        client.println("input, select, button { font-size: 1.2em; padding: 8px; margin: 5px 0; width: 90%; max-width: 300px; }");
-        client.println("h2 { font-size: 2em; }");
-        client.println("</style>");
-        client.println("</head>");
-        client.println("<body>");
-        client.println("<h2>Portenta C3 WiFi Setup</h2>");
-        client.println("<form method='POST' action='/save'>");
-
-        // Build SSID list if scanned
-        int count = WiFi.scanNetworks();
-        if (count == 0)
-            client.println("<option>No networks found</option>");
         else
         {
-            client.println("SSID: <select name='ssid'>");
-            for (int i = 0; i < count && i < 20; i++)
-            {
-                client.print("<option>");
-                client.print(WiFi.SSID(i));
-                client.println("</option>");
-            }
-            client.println("</select><br><br>");
+            client.println("HTTP/1.1 400 Bad Request");
+            client.println("Content-type:text/html");
+            client.println();
+            client.println("<html><body><h2>Bad request - missing ssid or pass</h2></body></html>");
+            client.println();
+            client.stop();
+            Serial.println("Bad POST /save request");
+            return;
         }
-
-        client.println("Password: <input type='password' name='pass'><br><br>");
-        client.println("<button type='submit'>Save</button>");
-        client.println("</form>");
-        client.println("<p><a href='/L'>Turn LED ON</a></p>");
-        client.println("<p><a href='/H'>Turn LED OFF</a></p>");
-        client.println("<p><a href='/test'>Test LED Colors</a></p>");
-        client.println("</body></html>");
-        client.println();
     }
+
+    // Serve portal UI
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-type:text/html");
+    client.println();
+    client.println("<!DOCTYPE html><html><head><title>WiFi Setup</title>");
+    client.println("<meta name='viewport' content='width=device-width, initial-scale=1.0'>");
+    client.println("<style>");
+    client.println("body { font-family: Arial, sans-serif; margin: 0; padding: 10px; text-align: center; }");
+    client.println("input, select, button { font-size: 1.2em; padding: 8px; margin: 5px 0; width: 90%; max-width: 300px; }");
+    client.println("h2 { font-size: 2em; }");
+    client.println("</style></head><body>");
+    client.println("<h2>Portenta C3 WiFi Setup</h2>");
+    client.println("<form method='POST' action='/save'>");
+
+    int count = WiFi.scanNetworks();
+    if (count == 0)
+        client.println("<p>No networks found</p>");
+    else
+    {
+        client.println("SSID: <select name='ssid'>");
+        for (int i = 0; i < count && i < 20; i++)
+        {
+            client.print("<option>");
+            client.print(WiFi.SSID(i));
+            client.println("</option>");
+        }
+        client.println("</select><br><br>");
+    }
+
+    client.println("Password: <input type='password' name='pass'><br><br>");
+    client.println("<button type='submit'>Save</button></form>");
+    client.println("<p><a href='/L'>Turn LED ON</a></p>");
+    client.println("<p><a href='/H'>Turn LED OFF</a></p>");
+    client.println("<p><a href='/test'>Test LED Colors</a></p>");
+    client.println("</body></html>");
+    client.println();
+
+    client.stop();
+    Serial.println("Client disconnected");
 }

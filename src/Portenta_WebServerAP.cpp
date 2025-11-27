@@ -76,16 +76,26 @@ bool PortentaWebServerAP::loadCredentials(WifiCredentials &creds)
 {
     FILE *f = fopen(CRED_FILE, "r");
     if (!f)
+    {
+        Serial.println("loadCredentials: file not found");
         return false;
+    }
+
     char buf[128] = {0};
     fread(buf, 1, sizeof(buf) - 1, f);
     fclose(f);
 
     String ssidStr, passStr;
     if (!parseCredsFromJson(buf, ssidStr, passStr))
+    {
+        Serial.println("Failed to parse credentials");
         return false;
+    }
     ssidStr.toCharArray(creds.ssid, sizeof(creds.ssid));
     passStr.toCharArray(creds.pass, sizeof(creds.pass));
+
+    Serial.print("Loaded creds: ");
+    Serial.println(creds.ssid);
     return true;
 }
 
@@ -97,6 +107,8 @@ void PortentaWebServerAP::saveCredentials(const WifiCredentials &creds)
     String json = "{\"ssid\":\"" + String(creds.ssid) + "\",\"pass\":\"" + String(creds.pass) + "\"}";
     fwrite(json.c_str(), 1, json.length(), f);
     fclose(f);
+
+    Serial.println("saveCredentials: written successfully");
 }
 
 // -------------------------
@@ -153,8 +165,13 @@ bool PortentaWebServerAP::connectSavedWiFi()
 {
     WifiCredentials creds;
     if (!loadCredentials(creds))
+    {
+        Serial.println("No saved credentials found");
         return false;
+    }
 
+    Serial.print("Connecting to saved WiFi: ");
+    Serial.println(creds.ssid);
     WiFi.end();
     delay(150);
     WiFi.begin(creds.ssid, creds.pass);
@@ -162,6 +179,17 @@ bool PortentaWebServerAP::connectSavedWiFi()
     while (WiFi.status() != WL_CONNECTED && millis() - start < 20000)
         delay(300);
 
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        Serial.println("\nConnected! IP: ");
+        Serial.println(WiFi.localIP());
+
+        stopAPMode();
+        server.begin();
+        return true;
+    }
+
+    Serial.println("\nFailed to connect.");
     return (WiFi.status() == WL_CONNECTED);
 }
 
@@ -170,19 +198,24 @@ bool PortentaWebServerAP::connectSavedWiFi()
 // -------------------------
 void PortentaWebServerAP::startAPMode()
 {
+    Serial.println("Starting AP...");
     WiFi.end();
     delay(150);
     if (WiFi.beginAP(AP_SSID, AP_PASS) != WL_AP_LISTENING)
         return;
+    Serial.print("AP IP: ");
+    Serial.println(WiFi.localIP());
     udp.begin(53);
     server.begin();
     apModeActive = true;
+    Serial.println("Web server started.");
 }
 
 void PortentaWebServerAP::stopAPMode()
 {
     if (!apModeActive)
         return;
+    Serial.println("Stopping AP...");
     WiFi.end();
     delay(150);
     apModeActive = false;
@@ -197,7 +230,6 @@ void PortentaWebServerAP::begin()
     LED_Test();
     if (fs.mount(&blockDevice))
         fs.reformat(&blockDevice);
-    server.begin();
 }
 
 // -------------------------

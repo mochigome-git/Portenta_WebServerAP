@@ -35,6 +35,7 @@ private:
     WiFiServer server;
     WiFiUDP udp;
     bool apModeActive;
+    unsigned long lastWebAccess = 0;
 
     QSPIFlashBlockDevice blockDevice;
     FATFileSystem fs;

@@ -116,12 +116,23 @@ void PortentaWebServerAP::saveCredentials(const WifiCredentials &creds)
 // -------------------------
 void PortentaWebServerAP::updateLED()
 {
+    unsigned long now = millis();
+
     if (apModeActive)
+    {
         LED_SetColor(RED);
+    }
     else if (WiFi.status() == WL_CONNECTED)
-        LED_SetColor(CYAN);
+    {
+        if (now - lastWebAccess < 2000) // website accessed in last 2 seconds
+            LED_SetColor(BLUE);
+        else
+            LED_SetColor(CYAN); // connected but idle
+    }
     else
+    {
         LED_SetColor(OFF);
+    }
 }
 
 // -------------------------
@@ -247,6 +258,7 @@ void PortentaWebServerAP::loop()
     WiFiClient client = server.available();
     if (client)
     {
+        lastWebAccess = millis();
         String request = "";
         unsigned long timeout = millis() + 5000;
         while (client.connected() && millis() < timeout)
